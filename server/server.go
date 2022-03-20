@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"go-podcast-api/server/middleware"
+	"go-podcast-api/utils"
 	"net"
 	"net/http"
 
@@ -21,8 +22,10 @@ type Server struct {
 func NewServer(prefix string) (*Server, error) {
 	mainRouter := mux.NewRouter()
 	router := mainRouter.PathPrefix(prefix).Subrouter()
+	router.Use(Logger)
 
 	database.InitDatabase()
+	utils.InitialMigration()
 
 	router.Use(middleware.JwtAuthentication)
 

@@ -2,13 +2,21 @@ package podcasts
 
 import (
 	"encoding/json"
+	"github.com/go-redis/redis/v8"
 	"github.com/jinzhu/gorm"
 	"github.com/mmcdole/gofeed"
+	log "github.com/sirupsen/logrus"
 	"go-podcast-api/database/orm"
 	"go-podcast-api/utils"
-	"log"
 	"strconv"
+	"time"
 )
+
+var redisClient = redis.NewClient(&redis.Options{
+	Addr:     "localhost:6379",
+	Password: "", // no password set
+	DB:       0,  // use default DB
+})
 
 func GetDB() *gorm.DB {
 	return orm.DBCon
@@ -66,7 +74,7 @@ func (podcast *Podcast) Create() error {
 	return err
 }
 
-func ParseFeed(feedUrl string) *gofeed.Feed {
+func ParseFeed(feedUrl string) (*gofeed.Feed, error) {
 
 	fp := gofeed.NewParser()
 	feed, _ := fp.ParseURL(feedUrl)
@@ -74,7 +82,7 @@ func ParseFeed(feedUrl string) *gofeed.Feed {
 	_, err := json.Marshal(feed)
 	if err != nil {
 		log.Fatal(err)
-		return nil
+		return nil, err
 	}
 
 	//err = client.Set(feedUrl, out, 0).Err()
@@ -83,10 +91,10 @@ func ParseFeed(feedUrl string) *gofeed.Feed {
 	//	return nil
 	//}
 
-	return feed
+	return feed, nil
 }
 
-func FindPodcastById(podId string) (*Podcast, *gofeed.Feed, *utils.Error) {
+func FindPodcast(podId string) (*Podcast, *gofeed.Feed, *utils.Error) {
 	podcast := &Podcast{}
 	err := GetDB().Table("podcasts").First(&podcast, "id = ?", podId).Error
 
@@ -98,15 +106,70 @@ func FindPodcastById(podId string) (*Podcast, *gofeed.Feed, *utils.Error) {
 		return &Podcast{}, &gofeed.Feed{}, utils.NewError(utils.EINTERNAL, "internal database error", err)
 	}
 
-	feed := ParseFeed(podcast.FeedUrl)
+	var cachedFeed, e = utils.GetFromCache(redisClient, podcast.FeedUrl)
+
+	if e != nil {
+		log.Println(err)
+		dbFeed := &gofeed.Feed{}
+
+		if dbFeed, err = ParseFeed(podcast.FeedUrl); err != nil {
+			return podcast, dbFeed, utils.NewError(utils.EINTERNAL, "internal database error", err)
+		}
+
+		log.Println("Retrieving Podcast Feed from DB")
+
+		if ok := utils.SetInCache(redisClient, podcast.FeedUrl, dbFeed, 15*time.Minute); !ok {
+			return podcast, dbFeed, utils.NewError(utils.EINTERNAL, "internal database error", err)
+		}
+
+		log.Println("Set Podcast Feed in Redis Cache")
+
+		return podcast, dbFeed, nil
+	}
+
+	log.Println("Retrieving Podcast Feed from Redis Cache")
+
+	feed := &gofeed.Feed{}
+	err = json.Unmarshal(cachedFeed, &feed)
+
+	if err != nil {
+		log.Println(err)
+		return podcast, feed, utils.NewError(utils.EINTERNAL, "internal database error", err)
+	}
 
 	return podcast, feed, nil
 }
 
-func AllPodcasts() (*[]Podcast, *utils.Error) {
+func FindAllPodcasts() (*[]Podcast, *utils.Error) {
+
+	var cachedPodcasts, err = utils.GetFromCache(redisClient, "AllPodcasts")
+
+	if err != nil {
+		log.Println(err)
+		dbProducts := &[]Podcast{}
+		if err := GetDB().Limit(10).Table("podcasts").Find(&dbProducts).Error; err != nil {
+			return dbProducts, utils.NewError(utils.EINTERNAL, "internal database error", err)
+		}
+
+		log.Println("Retrieving AllPodcasts from DB")
+
+		if ok := utils.SetInCache(redisClient, "AllPodcasts", dbProducts, 45*time.Minute); !ok {
+			return dbProducts, utils.NewError(utils.EINTERNAL, "internal database error", err)
+		}
+
+		log.Println("Set AllPodcasts in Redis Cache")
+
+		return dbProducts, nil
+	}
+
+	log.Println("Retrieving AllPodcasts from Redis Cache")
+
 	podcasts := &[]Podcast{}
-	if err := GetDB().Limit(10).Table("podcasts").Find(&podcasts).Error; err != nil {
-		return podcasts, utils.NewError(utils.EINTERNAL, "internal database error", err)
+	err = json.Unmarshal(cachedPodcasts, &podcasts)
+
+	if err != nil {
+		log.Println(err)
+		return nil, utils.NewError(utils.EINTERNAL, "internal database error", err)
 	}
 
 	return podcasts, nil
@@ -124,7 +187,7 @@ func GetPodcastByTrack(itunesId string) *Podcast {
 	return podcast
 }
 
-func SearchPodcastByName(query string) (*[]Podcast, *utils.Error) {
+func QueryPodcast(query string) (*[]Podcast, *utils.Error) {
 	podcasts := &[]Podcast{}
 
 	//SELECT * from podcasts where MATCH(name) AGAINST('Radio' IN NATURAL LANGUAGE MODE)

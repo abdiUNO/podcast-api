@@ -21,6 +21,10 @@ type Config struct {
 	DBHost string `env:"DB_HOST" envDefault:"172.17.0.1"`
 	DBPort string `env:"DB_PORT" envDefault:"3306"`
 
+	RedisHost string `env:"REDIS_HOST" envDefault:"localhost"`
+	RedisPort string `env:"REDIS_PORT" envDefault:"6379"`
+	RedisPass string `env:"REDIS_PASS" envDefault:""`
+
 	JWTSecret     string `env:"JWT_SECRET" envDefault:"qBPXnbcuQyauqlhTpJQjgAnmauKiZUgrhdu7eQhuNXfr6"`
 	MailGunApiKey string `env:"MAILGUN_API_KEY" envDefault:""`
 }
